@@ -16,12 +16,19 @@ interface Incident {
   title: string;
   url: string;
   severity: Severity | null;
+  services: string[];
   createdAt: string;
   latestUpdate: {
     body: string;
     createdAt: string;
   };
 }
+
+const SERVICE_LABELS: Record<string, string> = {
+  "service:app": "App",
+  "service:api": "API",
+  "service:marketing-site": "Marketing Site",
+};
 
 interface StatusWidgetProps {
   /** Polling interval in ms. Default: 60000 (1 min) */
@@ -92,6 +99,12 @@ function parseSeverity(labels: any[]): Severity | null {
   return null;
 }
 
+function parseServices(labels: any[]): string[] {
+  return labels
+    .map((l: any) => SERVICE_LABELS[l.name])
+    .filter(Boolean);
+}
+
 function getWorstSeverity(incidents: Incident[]): Severity | null {
   for (const s of SEVERITY_PRIORITY) {
     if (incidents.some((i) => i.severity === s)) return s;
@@ -147,6 +160,7 @@ export function ServiSuiteStatus({
               title: issue.title,
               url: issue.html_url,
               severity: parseSeverity(issue.labels || []),
+              services: parseServices(issue.labels || []),
               createdAt: issue.created_at,
               latestUpdate,
             };
@@ -234,6 +248,18 @@ export function ServiSuiteStatus({
                 {timeAgo(incident.latestUpdate.createdAt)}
               </span>
             </div>
+            {incident.services.length > 0 && (
+              <div className="flex items-center gap-1.5 mb-1">
+                {incident.services.map((service) => (
+                  <span
+                    key={service}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[11px] font-medium"
+                  >
+                    {service}
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="text-gray-500 text-xs leading-relaxed">
               {preview.length > 140 ? `${preview.slice(0, 140)}...` : preview}
             </div>
