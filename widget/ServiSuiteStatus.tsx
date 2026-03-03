@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 // --- Configuration ---
 const UPPTIME_OWNER = "Harris-Barrick-Software";
 const UPPTIME_REPO = "servisuite-upptime";
 const STATUS_PAGE_URL = "https://status.servisuite.com";
 const GITHUB_API = "https://api.github.com";
+const MAINTENANCE_LOOKAHEAD_DAYS = 7;
+const DISMISS_KEY = "servisuite-status-dismissed";
 
 // --- Types ---
 type Severity = "critical" | "major" | "minor" | "maintenance";
@@ -24,46 +26,55 @@ interface Incident {
   };
 }
 
+interface StatusBannerProps {
+  /** Polling interval in ms. Default: 60000 (1 min) */
+  pollInterval?: number;
+  /** Position of the banner. Default: "top" */
+  position?: "top" | "bottom";
+  /** Additional CSS class on the root element */
+  className?: string;
+}
+
 const SERVICE_LABELS: Record<string, string> = {
   "service:app": "App",
   "service:api": "API",
   "service:marketing-site": "Marketing Site",
 };
 
-interface StatusWidgetProps {
-  /** Polling interval in ms. Default: 60000 (1 min) */
-  pollInterval?: number;
-  /** Additional CSS class on the root element */
-  className?: string;
-}
-
 // --- Severity config ---
-const SEVERITY_CONFIG: Record<Severity, { dot: string; badge: string; badgeText: string; icon: string; label: string }> = {
+const SEVERITY_CONFIG: Record<
+  Severity,
+  { bg: string; border: string; text: string; badge: string; icon: string; label: string }
+> = {
   critical: {
-    dot: "bg-red-600",
+    bg: "bg-red-50",
+    border: "border-red-200",
+    text: "text-red-800",
     badge: "bg-red-100 text-red-700",
-    badgeText: "Critical",
     icon: "🔴",
     label: "Critical Outage",
   },
   major: {
-    dot: "bg-orange-500",
+    bg: "bg-orange-50",
+    border: "border-orange-200",
+    text: "text-orange-800",
     badge: "bg-orange-100 text-orange-700",
-    badgeText: "Major",
     icon: "🟠",
     label: "Major Disruption",
   },
   minor: {
-    dot: "bg-yellow-500",
+    bg: "bg-yellow-50",
+    border: "border-yellow-200",
+    text: "text-yellow-800",
     badge: "bg-yellow-100 text-yellow-700",
-    badgeText: "Minor",
     icon: "🟡",
     label: "Minor Issue",
   },
   maintenance: {
-    dot: "bg-blue-500",
+    bg: "bg-blue-50",
+    border: "border-blue-200",
+    text: "text-blue-800",
     badge: "bg-blue-100 text-blue-700",
-    badgeText: "Maintenance",
     icon: "🔧",
     label: "Scheduled Maintenance",
   },
@@ -112,14 +123,42 @@ function getWorstSeverity(incidents: Incident[]): Severity | null {
   return null;
 }
 
+function isMaintenanceWithinLookahead(issue: any): boolean {
+  const created = new Date(issue.created_at);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + MAINTENANCE_LOOKAHEAD_DAYS);
+  return created <= cutoff;
+}
+
+function getDismissedIds(): Set<number> {
+  try {
+    const raw = localStorage.getItem(DISMISS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(parsed);
+  } catch {
+    return new Set();
+  }
+}
+
+function setDismissedIds(ids: Set<number>): void {
+  try {
+    localStorage.setItem(DISMISS_KEY, JSON.stringify([...ids]));
+  } catch {}
+}
+
 // --- Component ---
 export function ServiSuiteStatus({
   pollInterval = 60_000,
+  position = "top",
   className,
-}: StatusWidgetProps) {
+}: StatusBannerProps) {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [dismissedIds, setDismissedIdsState] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState(false);
+  const initialLoad = useRef(true);
 
   const fetchIncidents = useCallback(async () => {
     try {
@@ -134,6 +173,13 @@ export function ServiSuiteStatus({
       const results: Incident[] = await Promise.all(
         issues
           .filter((issue: any) => !issue.pull_request)
+          .filter((issue: any) => {
+            const severity = parseSeverity(issue.labels || []);
+            if (severity === "maintenance") {
+              return isMaintenanceWithinLookahead(issue);
+            }
+            return true;
+          })
           .map(async (issue: any): Promise<Incident> => {
             let latestUpdate = {
               body: issue.body || issue.title,
@@ -169,113 +215,198 @@ export function ServiSuiteStatus({
 
       setIncidents(results);
       setError(false);
+
+      // If new incidents appeared that weren't previously dismissed, reset dismissed state
+      if (!initialLoad.current) {
+        const currentDismissed = getDismissedIds();
+        const newIncidentIds = results.map((i) => i.id);
+        // Clean up dismissed IDs that are no longer active
+        const cleaned = new Set([...currentDismissed].filter((id) => newIncidentIds.includes(id)));
+        setDismissedIds(cleaned);
+        setDismissedIdsState(cleaned);
+      }
     } catch {
       setError(true);
     } finally {
       setLoading(false);
+      initialLoad.current = false;
     }
   }, []);
 
   useEffect(() => {
+    setDismissedIdsState(getDismissedIds());
     fetchIncidents();
     const interval = setInterval(fetchIncidents, pollInterval);
     return () => clearInterval(interval);
   }, [fetchIncidents, pollInterval]);
 
-  const worst = getWorstSeverity(incidents);
-  const isOperational = incidents.length === 0;
+  const visibleIncidents = incidents.filter((i) => !dismissedIds.has(i.id));
+  const worst = getWorstSeverity(visibleIncidents);
 
-  if (loading) {
-    return (
-      <div className={`max-w-sm border border-gray-200 rounded-lg overflow-hidden text-sm ${className ?? ""}`}>
-        <div className="px-4 py-3 text-gray-500">Checking status...</div>
-      </div>
-    );
+  const handleDismiss = (id: number) => {
+    const next = new Set(dismissedIds);
+    next.add(id);
+    setDismissedIds(next);
+    setDismissedIdsState(next);
+  };
+
+  const handleDismissAll = () => {
+    const next = new Set(incidents.map((i) => i.id));
+    setDismissedIds(next);
+    setDismissedIdsState(next);
+    setExpanded(false);
+  };
+
+  // Nothing to show — completely hidden
+  if (loading || error || visibleIncidents.length === 0) {
+    return null;
   }
 
-  if (error) {
-    return (
-      <div className={`max-w-sm border border-gray-200 rounded-lg overflow-hidden text-sm ${className ?? ""}`}>
-        <a
-          href={STATUS_PAGE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block px-4 py-3 text-blue-500 no-underline hover:underline"
-        >
-          View status page
-        </a>
-      </div>
-    );
-  }
+  const positionClasses = position === "top"
+    ? "top-0 left-0 right-0"
+    : "bottom-0 left-0 right-0";
 
-  const bannerDot = isOperational
-    ? "bg-green-500"
-    : worst
-      ? SEVERITY_CONFIG[worst].dot
-      : "bg-red-500";
-
-  const bannerText = isOperational
-    ? "All Systems Operational"
-    : worst
-      ? `${SEVERITY_CONFIG[worst].label} — ${incidents.length} active`
-      : `${incidents.length} Active Incident${incidents.length > 1 ? "s" : ""}`;
+  const sev = worst ? SEVERITY_CONFIG[worst] : SEVERITY_CONFIG.minor;
+  const primary = visibleIncidents[0];
+  const primarySev = primary.severity ? SEVERITY_CONFIG[primary.severity] : sev;
+  const preview = stripMarkdown(primary.latestUpdate.body);
 
   return (
-    <div className={`max-w-sm border border-gray-200 rounded-lg overflow-hidden text-sm ${className ?? ""}`}>
-      {/* Overall status banner */}
-      <div className={`flex items-center gap-2 px-4 py-3 ${incidents.length > 0 ? "border-b border-gray-200" : ""}`}>
-        <span className={`size-2.5 rounded-full shrink-0 ${bannerDot}`} />
-        <span className="font-semibold">{bannerText}</span>
-      </div>
-
-      {/* Active incidents */}
-      {incidents.map((incident) => {
-        const preview = stripMarkdown(incident.latestUpdate.body);
-        const sev = incident.severity ? SEVERITY_CONFIG[incident.severity] : null;
-
-        return (
-          <div key={incident.id} className="px-4 py-2.5 border-b border-gray-100">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-2 min-w-0">
-                {sev && (
-                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0 ${sev.badge}`}>
-                    {sev.icon} {sev.badgeText}
-                  </span>
-                )}
-                <span className="font-medium text-[13px] truncate">{incident.title}</span>
-              </div>
-              <span className="text-gray-400 text-xs shrink-0 ml-2">
-                {timeAgo(incident.latestUpdate.createdAt)}
+    <div
+      className={`fixed ${positionClasses} z-50 ${className ?? ""}`}
+      role="alert"
+    >
+      <div className={`${sev.bg} ${sev.border} border-b shadow-sm`}>
+        {/* Primary banner row */}
+        <div className="max-w-7xl mx-auto px-4 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              {/* Severity badge */}
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium shrink-0 ${primarySev.badge}`}>
+                {primarySev.icon} {primarySev.label}
               </span>
+
+              {/* Title + services */}
+              <span className={`text-sm font-medium truncate ${sev.text}`}>
+                {primary.title}
+              </span>
+
+              {primary.services.length > 0 && (
+                <div className="hidden sm:flex items-center gap-1">
+                  {primary.services.map((service) => (
+                    <span
+                      key={service}
+                      className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/60 text-[11px] font-medium text-gray-600"
+                    >
+                      {service}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-            {incident.services.length > 0 && (
-              <div className="flex items-center gap-1.5 mb-1">
-                {incident.services.map((service) => (
-                  <span
-                    key={service}
-                    className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[11px] font-medium"
-                  >
-                    {service}
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="text-gray-500 text-xs leading-relaxed">
-              {preview.length > 140 ? `${preview.slice(0, 140)}...` : preview}
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Time */}
+              <span className={`text-xs ${sev.text} opacity-70`}>
+                {timeAgo(primary.latestUpdate.createdAt)}
+              </span>
+
+              {/* Expand button if multiple incidents */}
+              {visibleIncidents.length > 1 && (
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 ${sev.text}`}
+                >
+                  {expanded ? "Hide" : `+${visibleIncidents.length - 1} more`}
+                </button>
+              )}
+
+              {/* Status page link */}
+              <a
+                href={STATUS_PAGE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 no-underline ${sev.text}`}
+              >
+                Details
+              </a>
+
+              {/* Dismiss */}
+              <button
+                onClick={visibleIncidents.length === 1 ? () => handleDismiss(primary.id) : handleDismissAll}
+                className={`p-1 rounded hover:bg-black/5 ${sev.text}`}
+                aria-label="Dismiss"
+              >
+                <svg className="size-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           </div>
-        );
-      })}
 
-      {/* Link to full status page */}
-      <a
-        href={STATUS_PAGE_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block px-4 py-2.5 text-center text-blue-500 text-[13px] no-underline hover:underline border-t border-gray-200"
-      >
-        View full status page &rarr;
-      </a>
+          {/* Latest update preview */}
+          <div className={`text-xs mt-1 ${sev.text} opacity-70`}>
+            {preview.length > 200 ? `${preview.slice(0, 200)}...` : preview}
+          </div>
+        </div>
+
+        {/* Expanded: additional incidents */}
+        {expanded && visibleIncidents.length > 1 && (
+          <div className={`border-t ${sev.border}`}>
+            {visibleIncidents.slice(1).map((incident) => {
+              const incSev = incident.severity ? SEVERITY_CONFIG[incident.severity] : sev;
+              const incPreview = stripMarkdown(incident.latestUpdate.body);
+
+              return (
+                <div
+                  key={incident.id}
+                  className={`max-w-7xl mx-auto px-4 py-2 border-b last:border-b-0 ${sev.border}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0 ${incSev.badge}`}>
+                        {incSev.icon} {incSev.badgeText}
+                      </span>
+                      <span className={`text-sm font-medium truncate ${sev.text}`}>
+                        {incident.title}
+                      </span>
+                      {incident.services.length > 0 && (
+                        <div className="hidden sm:flex items-center gap-1">
+                          {incident.services.map((service) => (
+                            <span
+                              key={service}
+                              className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/60 text-[11px] font-medium text-gray-600"
+                            >
+                              {service}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-xs ${sev.text} opacity-70`}>
+                        {timeAgo(incident.latestUpdate.createdAt)}
+                      </span>
+                      <button
+                        onClick={() => handleDismiss(incident.id)}
+                        className={`p-1 rounded hover:bg-black/5 ${sev.text}`}
+                        aria-label="Dismiss"
+                      >
+                        <svg className="size-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className={`text-xs mt-0.5 ${sev.text} opacity-70`}>
+                    {incPreview.length > 150 ? `${incPreview.slice(0, 150)}...` : incPreview}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
