@@ -9,10 +9,13 @@ const STATUS_PAGE_URL = "https://status.servisuite.com";
 const GITHUB_API = "https://api.github.com";
 
 // --- Types ---
+type Severity = "critical" | "major" | "minor" | "maintenance";
+
 interface Incident {
   id: number;
   title: string;
   url: string;
+  severity: Severity | null;
   createdAt: string;
   latestUpdate: {
     body: string;
@@ -20,14 +23,46 @@ interface Incident {
   };
 }
 
-type OverallStatus = "operational" | "incident";
-
 interface StatusWidgetProps {
   /** Polling interval in ms. Default: 60000 (1 min) */
   pollInterval?: number;
   /** Additional CSS class on the root element */
   className?: string;
 }
+
+// --- Severity config ---
+const SEVERITY_CONFIG: Record<Severity, { dot: string; badge: string; badgeText: string; icon: string; label: string }> = {
+  critical: {
+    dot: "bg-red-600",
+    badge: "bg-red-100 text-red-700",
+    badgeText: "Critical",
+    icon: "🔴",
+    label: "Critical Outage",
+  },
+  major: {
+    dot: "bg-orange-500",
+    badge: "bg-orange-100 text-orange-700",
+    badgeText: "Major",
+    icon: "🟠",
+    label: "Major Disruption",
+  },
+  minor: {
+    dot: "bg-yellow-500",
+    badge: "bg-yellow-100 text-yellow-700",
+    badgeText: "Minor",
+    icon: "🟡",
+    label: "Minor Issue",
+  },
+  maintenance: {
+    dot: "bg-blue-500",
+    badge: "bg-blue-100 text-blue-700",
+    badgeText: "Maintenance",
+    icon: "🔧",
+    label: "Scheduled Maintenance",
+  },
+};
+
+const SEVERITY_PRIORITY: Severity[] = ["critical", "major", "minor", "maintenance"];
 
 // --- Helpers ---
 function timeAgo(dateStr: string): string {
@@ -48,6 +83,20 @@ function stripMarkdown(text: string): string {
     .replace(/[#*_~`>\[\]()!]/g, "")
     .replace(/\n+/g, " ")
     .trim();
+}
+
+function parseSeverity(labels: any[]): Severity | null {
+  for (const s of SEVERITY_PRIORITY) {
+    if (labels.some((l: any) => l.name === s)) return s;
+  }
+  return null;
+}
+
+function getWorstSeverity(incidents: Incident[]): Severity | null {
+  for (const s of SEVERITY_PRIORITY) {
+    if (incidents.some((i) => i.severity === s)) return s;
+  }
+  return null;
 }
 
 // --- Component ---
@@ -97,6 +146,7 @@ export function ServiSuiteStatus({
               id: issue.number,
               title: issue.title,
               url: issue.html_url,
+              severity: parseSeverity(issue.labels || []),
               createdAt: issue.created_at,
               latestUpdate,
             };
@@ -118,8 +168,8 @@ export function ServiSuiteStatus({
     return () => clearInterval(interval);
   }, [fetchIncidents, pollInterval]);
 
-  const status: OverallStatus =
-    incidents.length > 0 ? "incident" : "operational";
+  const worst = getWorstSeverity(incidents);
+  const isOperational = incidents.length === 0;
 
   if (loading) {
     return (
@@ -144,29 +194,42 @@ export function ServiSuiteStatus({
     );
   }
 
+  const bannerDot = isOperational
+    ? "bg-green-500"
+    : worst
+      ? SEVERITY_CONFIG[worst].dot
+      : "bg-red-500";
+
+  const bannerText = isOperational
+    ? "All Systems Operational"
+    : worst
+      ? `${SEVERITY_CONFIG[worst].label} — ${incidents.length} active`
+      : `${incidents.length} Active Incident${incidents.length > 1 ? "s" : ""}`;
+
   return (
     <div className={`max-w-sm border border-gray-200 rounded-lg overflow-hidden text-sm ${className ?? ""}`}>
       {/* Overall status banner */}
       <div className={`flex items-center gap-2 px-4 py-3 ${incidents.length > 0 ? "border-b border-gray-200" : ""}`}>
-        <span
-          className={`size-2.5 rounded-full shrink-0 ${
-            status === "operational" ? "bg-green-500" : "bg-red-500"
-          }`}
-        />
-        <span className="font-semibold">
-          {status === "operational"
-            ? "All Systems Operational"
-            : `${incidents.length} Active Incident${incidents.length > 1 ? "s" : ""}`}
-        </span>
+        <span className={`size-2.5 rounded-full shrink-0 ${bannerDot}`} />
+        <span className="font-semibold">{bannerText}</span>
       </div>
 
       {/* Active incidents */}
       {incidents.map((incident) => {
         const preview = stripMarkdown(incident.latestUpdate.body);
+        const sev = incident.severity ? SEVERITY_CONFIG[incident.severity] : null;
+
         return (
           <div key={incident.id} className="px-4 py-2.5 border-b border-gray-100">
             <div className="flex items-center justify-between mb-1">
-              <span className="font-medium text-[13px]">{incident.title}</span>
+              <div className="flex items-center gap-2 min-w-0">
+                {sev && (
+                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0 ${sev.badge}`}>
+                    {sev.icon} {sev.badgeText}
+                  </span>
+                )}
+                <span className="font-medium text-[13px] truncate">{incident.title}</span>
+              </div>
               <span className="text-gray-400 text-xs shrink-0 ml-2">
                 {timeAgo(incident.latestUpdate.createdAt)}
               </span>
