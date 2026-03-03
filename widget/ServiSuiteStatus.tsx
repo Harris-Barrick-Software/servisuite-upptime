@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 
 // --- Configuration ---
 const UPPTIME_OWNER = "Harris-Barrick-Software";
@@ -128,8 +129,11 @@ function timeAgo(dateStr: string): string {
 
 function stripMarkdown(text: string): string {
   return text
-    .replace(/[#*_~`>\[\]()!]/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) → text
+    .replace(/https?:\/\/\S+/g, "")           // strip standalone URLs
+    .replace(/[#*_~`>!]/g, "")                // strip remaining markdown chars
     .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")                     // collapse whitespace
     .trim();
 }
 
@@ -282,27 +286,7 @@ export function ServiSuiteStatus({
   className,
 }: StatusDotProps) {
   const { incidents, loading, error, dismissedIds, setDismissed } = useStatusData(pollInterval);
-  const [panelOpen, setPanelOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const dotRef = useRef<HTMLButtonElement>(null);
-
-  // Close panel on outside click
-  useEffect(() => {
-    if (!panelOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (
-        panelRef.current &&
-        !panelRef.current.contains(e.target as Node) &&
-        dotRef.current &&
-        !dotRef.current.contains(e.target as Node)
-      ) {
-        setPanelOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [panelOpen]);
 
   const undismissedIncidents = useMemo(
     () => incidents.filter((i) => !dismissedIds.has(i.id)),
@@ -342,26 +326,88 @@ export function ServiSuiteStatus({
 
   const dotPulse = hasUndismissed && !bannerDismissed && !!worst && ["critical", "major"].includes(worst);
 
-  // --- Tooltip text ---
-  const tooltipText = loading
-    ? "Checking status..."
-    : error
-      ? "Unable to check status"
-      : !hasIncidents
-        ? "All systems operational"
-        : `${incidents.length} event${incidents.length > 1 ? "s" : ""}`;
+  const bannerVisible = hasIncidents && !bannerDismissed;
 
   // --- Banner data ---
-  const bannerPrimary = hasUndismissed ? undismissedIncidents[0] : null;
+  const bannerPrimary = hasIncidents ? incidents[0] : null;
   const bannerStyle = bannerPrimary ? getIncidentStyle(bannerPrimary) : SCHEDULED_STYLE;
+
+  const banner = bannerPrimary && bannerVisible && (
+    <div className="fixed top-0 left-0 right-0 z-[1400]" role="alert">
+      <div className={`${bannerStyle.bg} ${bannerStyle.border} border-b shadow-sm`}>
+        <div className="max-w-7xl mx-auto px-4 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium shrink-0 ${bannerStyle.badge}`}>
+                {bannerStyle.icon} {bannerPrimary.kind === "scheduled" ? "Upcoming" : bannerStyle.label}
+              </span>
+              <span className={`text-sm font-medium truncate ${bannerStyle.text}`}>
+                {bannerPrimary.title}
+              </span>
+              {bannerPrimary.services.length > 0 && (
+                <div className="hidden sm:flex items-center gap-1">
+                  {bannerPrimary.services.map((service) => (
+                    <span
+                      key={service}
+                      className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/60 text-[11px] font-medium text-gray-600"
+                    >
+                      {service}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`text-xs ${bannerStyle.text} opacity-70`}>
+                {timeAgo(bannerPrimary.latestUpdate.createdAt)}
+              </span>
+              {incidents.length > 1 && (
+                <span className={`text-xs font-medium ${bannerStyle.text}`}>
+                  +{incidents.length - 1} more
+                </span>
+              )}
+              <a
+                href={STATUS_PAGE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 no-underline ${bannerStyle.text}`}
+              >
+                Details
+              </a>
+              <button
+                onClick={handleDismissBanner}
+                className={`p-1 rounded hover:bg-black/5 ${bannerStyle.text}`}
+                aria-label="Dismiss"
+              >
+                <svg className="size-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div className={`text-xs mt-1 ${bannerStyle.text} opacity-70`}>
+            {(() => {
+              const p = stripMarkdown(bannerPrimary.latestUpdate.body);
+              return p.length > 200 ? `${p.slice(0, 200)}...` : p;
+            })()}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <>
-      {/* Sidebar dot */}
+      {/* Sidebar dot — click re-shows the banner */}
       <div className={`relative ${className ?? ""}`}>
         <button
-          ref={dotRef}
-          onClick={() => setPanelOpen(!panelOpen)}
+          onClick={() => {
+            if (hasIncidents) {
+              setBannerDismissed(false);
+            } else {
+              window.open(STATUS_PAGE_URL, "_blank");
+            }
+          }}
           className="group relative flex items-center justify-center p-1.5 rounded-md hover:bg-gray-100 transition-colors"
           aria-label="System Status"
         >
@@ -372,152 +418,11 @@ export function ServiSuiteStatus({
               {incidents.length}
             </span>
           )}
-
-          {/* Tooltip */}
-          <span className="pointer-events-none absolute left-full ml-2 px-2 py-1 rounded bg-gray-900 text-white text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-[1300]">
-            {tooltipText}
-          </span>
         </button>
-
-        {/* Panel popover */}
-        {panelOpen && (
-          <div
-            ref={panelRef}
-            className="absolute left-full ml-2 top-0 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-[1300] overflow-hidden"
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100">
-              <span className="text-sm font-semibold text-gray-900">System Status</span>
-              <a
-                href={STATUS_PAGE_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-blue-500 no-underline hover:underline"
-              >
-                Full status page
-              </a>
-            </div>
-
-            {/* Content */}
-            {!hasIncidents ? (
-              <div className="px-3 py-6 text-center">
-                <span className="inline-block size-3 rounded-full bg-green-500 mb-2" />
-                <p className="text-sm text-gray-600">All systems operational</p>
-                <p className="text-xs text-gray-400 mt-1">No active incidents</p>
-              </div>
-            ) : (
-              <div className="max-h-80 overflow-y-auto">
-                {incidents.map((incident) => {
-                  const style = getIncidentStyle(incident);
-                  const preview = stripMarkdown(incident.latestUpdate.body);
-
-                  return (
-                    <a
-                      key={incident.id}
-                      href={incident.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`block px-3 py-2.5 border-b border-gray-50 last:border-b-0 no-underline hover:brightness-95 transition-all ${style.bg}`}
-                    >
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${style.badge}`}>
-                          {style.icon} {incident.kind === "scheduled" ? "Upcoming" : style.label}
-                        </span>
-                        <span className="text-xs text-gray-400">
-                          {timeAgo(incident.latestUpdate.createdAt)}
-                        </span>
-                      </div>
-                      <p className={`text-sm font-medium ${style.text} mb-0.5`}>
-                        {incident.title}
-                      </p>
-                      {incident.services.length > 0 && (
-                        <div className="flex items-center gap-1 mb-1">
-                          {incident.services.map((service) => (
-                            <span
-                              key={service}
-                              className="inline-flex items-center px-1 py-0.5 rounded bg-white/80 text-[10px] font-medium text-gray-500"
-                            >
-                              {service}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <p className="text-xs text-gray-500 leading-relaxed">
-                        {preview.length > 120 ? `${preview.slice(0, 120)}...` : preview}
-                      </p>
-                    </a>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
-      {/* Floating banner — auto-shows for undismissed incidents */}
-      {bannerPrimary && !bannerDismissed && (
-        <div className="fixed top-0 left-0 right-0 z-[1400]" role="alert">
-          <div className={`${bannerStyle.bg} ${bannerStyle.border} border-b shadow-sm`}>
-            <div className="max-w-7xl mx-auto px-4 py-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium shrink-0 ${bannerStyle.badge}`}>
-                    {bannerStyle.icon} {bannerPrimary.kind === "scheduled" ? "Upcoming" : bannerStyle.label}
-                  </span>
-                  <span className={`text-sm font-medium truncate ${bannerStyle.text}`}>
-                    {bannerPrimary.title}
-                  </span>
-                  {bannerPrimary.services.length > 0 && (
-                    <div className="hidden sm:flex items-center gap-1">
-                      {bannerPrimary.services.map((service) => (
-                        <span
-                          key={service}
-                          className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/60 text-[11px] font-medium text-gray-600"
-                        >
-                          {service}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className={`text-xs ${bannerStyle.text} opacity-70`}>
-                    {timeAgo(bannerPrimary.latestUpdate.createdAt)}
-                  </span>
-                  {undismissedIncidents.length > 1 && (
-                    <span className={`text-xs font-medium ${bannerStyle.text}`}>
-                      +{undismissedIncidents.length - 1} more
-                    </span>
-                  )}
-                  <a
-                    href={STATUS_PAGE_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 no-underline ${bannerStyle.text}`}
-                  >
-                    Details
-                  </a>
-                  <button
-                    onClick={handleDismissBanner}
-                    className={`p-1 rounded hover:bg-black/5 ${bannerStyle.text}`}
-                    aria-label="Dismiss"
-                  >
-                    <svg className="size-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <div className={`text-xs mt-1 ${bannerStyle.text} opacity-70`}>
-                {(() => {
-                  const p = stripMarkdown(bannerPrimary.latestUpdate.body);
-                  return p.length > 200 ? `${p.slice(0, 200)}...` : p;
-                })()}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Banner portaled to body to escape Drawer stacking context */}
+      {banner && createPortal(banner, document.body)}
     </>
   );
 }
