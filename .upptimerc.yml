@@ -39,7 +39,7 @@ status-website:
   cname: status.servisuite.com
   logoUrl: https://servisuite.com/logo.png
   name: ServiSuite Status
-  introTitle: "**ServiSuite** is {indicatorRecent}."
+  introTitle: "**ServiSuite** System Status"
   introMessage: This is the real-time status page for [ServiSuite](https://servisuite.com). If you're experiencing issues, check below for details or [contact support](mailto:support@servisuite.com).
   theme: light
   navbar:
