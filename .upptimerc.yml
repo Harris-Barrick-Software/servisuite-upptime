@@ -1,36 +1,73 @@
-# Change these first
-owner: upptime # Your GitHub organization or username, where this repository lives
-repo: upptime # The name of this repository
+# ServiSuite Upptime Configuration
+# Repo: https://github.com/Harris-Barrick-Software/servisuite-upptime
 
+owner: Harris-Barrick-Software
+repo: servisuite-upptime
+
+# --- Monitored Endpoints ---
+# Replace these placeholders with your actual URLs
 sites:
-  - name: Google
-    url: https://www.google.com
-  - name: Wikipedia
-    url: https://en.wikipedia.org
-  - name: Hacker News
-    url: https://news.ycombinator.com
-  - name: Test Broken Site
-    url: https://thissitedoesnotexist.koj.co
-  - name: IPv6 test
-    url: forwardemail.net
-    port: 80
-    check: "tcp-ping"
-    ipv6: true
+  - name: ServiSuite App
+    url: https://app.servisuite.com
+    expectedStatusCodes:
+      - 200
+      - 301
+      - 302
+    maxResponseTime: 5000
 
+  - name: ServiSuite API
+    url: https://api.servisuite.com/health
+    expectedStatusCodes:
+      - 200
+    maxResponseTime: 3000
+
+  - name: ServiSuite Marketing Site
+    url: https://servisuite.com
+    expectedStatusCodes:
+      - 200
+      - 301
+    maxResponseTime: 5000
+
+  # Add more endpoints as needed:
+  # - name: ServiSuite Docs
+  #   url: https://docs.servisuite.com
+  #   expectedStatusCodes:
+  #     - 200
+
+# --- Status Page ---
 status-website:
-  # Add your custom domain name, or remove the `cname` line if you don't have a domain
-  # Uncomment the `baseUrl` line if you don't have a custom domain and add your repo name there
-  cname: demo.upptime.js.org
-  # baseUrl: /your-repo-name
-  logoUrl: https://raw.githubusercontent.com/upptime/upptime.js.org/master/static/img/icon.svg
-  name: Upptime
-  introTitle: "**Upptime** is the open-source uptime monitor and status page, powered entirely by GitHub."
-  introMessage: This is a sample status page which uses **real-time** data from our [GitHub repository](https://github.com/upptime/upptime). No server required — just GitHub Actions, Issues, and Pages. [**Get your own for free**](https://github.com/upptime/upptime)
+  cname: status.servisuite.com
+  logoUrl: https://servisuite.com/logo.png
+  name: ServiSuite Status
+  introTitle: "**ServiSuite** is {indicatorRecent}."
+  introMessage: This is the real-time status page for [ServiSuite](https://servisuite.com). If you're experiencing issues, check below for details or [contact support](mailto:support@servisuite.com).
+  theme: light
   navbar:
     - title: Status
       href: /
-    - title: GitHub
-      href: https://github.com/$OWNER/$REPO
+    - title: ServiSuite
+      href: https://servisuite.com
+    - title: Support
+      href: mailto:support@servisuite.com
 
-# Upptime also supports notifications, assigning issues, and more
-# See https://upptime.js.org/docs/configuration
+# --- Incidents ---
+skipDeleteIssues: true
+assignees:
+  # Add GitHub usernames of team members to auto-assign on incidents
+  # - your-github-username
+
+# --- Notifications ---
+notifications:
+  - type: discord
+    # Create a Discord webhook and add as a repo secret named DISCORD_WEBHOOK_URL
+    # Webhook URL format: https://discord.com/api/webhooks/{id}/{token}
+    url: $DISCORD_WEBHOOK_URL
+
+# --- Schedule ---
+# Check every 5 minutes (default)
+workflowSchedule:
+  uptime: "*/5 * * * *"
+  responseTime: "0 */6 * * *"
+  graphs: "0 0 * * *"
+  staticSite: "0 0 * * *"
+  summary: "0 0 * * *"
