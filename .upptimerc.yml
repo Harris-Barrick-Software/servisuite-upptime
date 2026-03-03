@@ -4,35 +4,7 @@
 owner: Harris-Barrick-Software
 repo: servisuite-upptime
 
-# --- Monitored Endpoints ---
-# Replace these placeholders with your actual URLs
-sites:
-  - name: ServiSuite App
-    url: https://app.servisuite.com
-    expectedStatusCodes:
-      - 200
-      - 301
-      - 302
-    maxResponseTime: 5000
-
-  - name: ServiSuite API
-    url: https://api.servisuite.com/health
-    expectedStatusCodes:
-      - 200
-    maxResponseTime: 3000
-
-  - name: ServiSuite Marketing Site
-    url: https://servisuite.com
-    expectedStatusCodes:
-      - 200
-      - 301
-    maxResponseTime: 5000
-
-  # Add more endpoints as needed:
-  # - name: ServiSuite Docs
-  #   url: https://docs.servisuite.com
-  #   expectedStatusCodes:
-  #     - 200
+sites: []
 
 # --- Status Page ---
 status-website:
