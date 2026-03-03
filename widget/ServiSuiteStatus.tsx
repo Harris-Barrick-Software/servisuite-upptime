@@ -12,12 +12,14 @@ const DISMISS_KEY = "servisuite-status-dismissed";
 
 // --- Types ---
 type Severity = "critical" | "major" | "minor" | "maintenance";
+type EventKind = "active" | "scheduled";
 
 interface Incident {
   id: number;
   title: string;
   url: string;
   severity: Severity | null;
+  kind: EventKind;
   services: string[];
   createdAt: string;
   latestUpdate: {
@@ -76,8 +78,17 @@ const SEVERITY_CONFIG: Record<
     text: "text-blue-800",
     badge: "bg-blue-100 text-blue-700",
     icon: "🔧",
-    label: "Scheduled Maintenance",
+    label: "Maintenance",
   },
+};
+
+const SCHEDULED_STYLE = {
+  bg: "bg-slate-50",
+  border: "border-slate-200",
+  text: "text-slate-700",
+  badge: "bg-slate-100 text-slate-600",
+  icon: "📅",
+  label: "Upcoming",
 };
 
 const SEVERITY_PRIORITY: Severity[] = ["critical", "major", "minor", "maintenance"];
@@ -110,6 +121,10 @@ function parseSeverity(labels: any[]): Severity | null {
   return null;
 }
 
+function isScheduled(labels: any[]): boolean {
+  return labels.some((l: any) => l.name === "scheduled");
+}
+
 function parseServices(labels: any[]): string[] {
   return labels
     .map((l: any) => SERVICE_LABELS[l.name])
@@ -117,14 +132,16 @@ function parseServices(labels: any[]): string[] {
 }
 
 function getWorstSeverity(incidents: Incident[]): Severity | null {
+  // Only consider active (non-scheduled) incidents for worst severity
+  const active = incidents.filter((i) => i.kind === "active");
   for (const s of SEVERITY_PRIORITY) {
-    if (incidents.some((i) => i.severity === s)) return s;
+    if (active.some((i) => i.severity === s)) return s;
   }
   return null;
 }
 
-function isMaintenanceWithinLookahead(issue: any): boolean {
-  const created = new Date(issue.created_at);
+function isWithinLookahead(dateStr: string): boolean {
+  const created = new Date(dateStr);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() + MAINTENANCE_LOOKAHEAD_DAYS);
   return created <= cutoff;
@@ -170,58 +187,68 @@ export function ServiSuiteStatus({
 
       const issues = await issuesRes.json();
 
-      const results: Incident[] = await Promise.all(
-        issues
-          .filter((issue: any) => !issue.pull_request)
-          .filter((issue: any) => {
-            const severity = parseSeverity(issue.labels || []);
-            if (severity === "maintenance") {
-              return isMaintenanceWithinLookahead(issue);
-            }
-            return true;
-          })
-          .map(async (issue: any): Promise<Incident> => {
-            let latestUpdate = {
-              body: issue.body || issue.title,
-              createdAt: issue.created_at,
-            };
+      const filtered = issues
+        .filter((issue: any) => !issue.pull_request)
+        .filter((issue: any) => {
+          // Scheduled events: only show if within 7-day lookahead
+          if (isScheduled(issue.labels || [])) {
+            return isWithinLookahead(issue.created_at);
+          }
+          return true;
+        });
 
-            if (issue.comments > 0) {
-              const commentsRes = await fetch(
-                `${issue.comments_url}?per_page=1&page=${issue.comments}`,
-              );
-              if (commentsRes.ok) {
-                const comments = await commentsRes.json();
-                if (comments.length > 0) {
-                  latestUpdate = {
-                    body: comments[0].body,
-                    createdAt: comments[0].created_at,
-                  };
-                }
+      const results: Incident[] = await Promise.all(
+        filtered.map(async (issue: any): Promise<Incident> => {
+          let latestUpdate = {
+            body: issue.body || issue.title,
+            createdAt: issue.created_at,
+          };
+
+          if (issue.comments > 0) {
+            const commentsRes = await fetch(
+              `${issue.comments_url}?per_page=1&page=${issue.comments}`,
+            );
+            if (commentsRes.ok) {
+              const comments = await commentsRes.json();
+              if (comments.length > 0) {
+                latestUpdate = {
+                  body: comments[0].body,
+                  createdAt: comments[0].created_at,
+                };
               }
             }
+          }
 
-            return {
-              id: issue.number,
-              title: issue.title,
-              url: issue.html_url,
-              severity: parseSeverity(issue.labels || []),
-              services: parseServices(issue.labels || []),
-              createdAt: issue.created_at,
-              latestUpdate,
-            };
-          })
+          const labels = issue.labels || [];
+
+          return {
+            id: issue.number,
+            title: issue.title,
+            url: issue.html_url,
+            severity: parseSeverity(labels),
+            kind: isScheduled(labels) ? "scheduled" : "active",
+            services: parseServices(labels),
+            createdAt: issue.created_at,
+            latestUpdate,
+          };
+        })
       );
+
+      // Sort: active incidents first (by severity), then scheduled
+      results.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "active" ? -1 : 1;
+        const aIdx = a.severity ? SEVERITY_PRIORITY.indexOf(a.severity) : 99;
+        const bIdx = b.severity ? SEVERITY_PRIORITY.indexOf(b.severity) : 99;
+        return aIdx - bIdx;
+      });
 
       setIncidents(results);
       setError(false);
 
-      // If new incidents appeared that weren't previously dismissed, reset dismissed state
       if (!initialLoad.current) {
         const currentDismissed = getDismissedIds();
-        const newIncidentIds = results.map((i) => i.id);
-        // Clean up dismissed IDs that are no longer active
-        const cleaned = new Set([...currentDismissed].filter((id) => newIncidentIds.includes(id)));
+        const activeIds = results.map((i) => i.id);
+        const cleaned = new Set([...currentDismissed].filter((id) => activeIds.includes(id)));
         setDismissedIds(cleaned);
         setDismissedIdsState(cleaned);
       }
@@ -241,6 +268,8 @@ export function ServiSuiteStatus({
   }, [fetchIncidents, pollInterval]);
 
   const visibleIncidents = incidents.filter((i) => !dismissedIds.has(i.id));
+  const activeIncidents = visibleIncidents.filter((i) => i.kind === "active");
+  const scheduledIncidents = visibleIncidents.filter((i) => i.kind === "scheduled");
   const worst = getWorstSeverity(visibleIncidents);
 
   const handleDismiss = (id: number) => {
@@ -257,7 +286,7 @@ export function ServiSuiteStatus({
     setExpanded(false);
   };
 
-  // Nothing to show — completely hidden
+  // Nothing to show
   if (loading || error || visibleIncidents.length === 0) {
     return null;
   }
@@ -266,9 +295,21 @@ export function ServiSuiteStatus({
     ? "top-0 left-0 right-0"
     : "bottom-0 left-0 right-0";
 
-  const sev = worst ? SEVERITY_CONFIG[worst] : SEVERITY_CONFIG.minor;
+  // Banner color: based on worst active severity, or slate if only scheduled
+  const bannerStyle = worst
+    ? SEVERITY_CONFIG[worst]
+    : activeIncidents.length > 0
+      ? SEVERITY_CONFIG.minor
+      : SCHEDULED_STYLE;
+
+  function getIncidentStyle(incident: Incident) {
+    if (incident.kind === "scheduled") return SCHEDULED_STYLE;
+    if (incident.severity) return SEVERITY_CONFIG[incident.severity];
+    return SEVERITY_CONFIG.minor;
+  }
+
   const primary = visibleIncidents[0];
-  const primarySev = primary.severity ? SEVERITY_CONFIG[primary.severity] : sev;
+  const primaryStyle = getIncidentStyle(primary);
   const preview = stripMarkdown(primary.latestUpdate.body);
 
   return (
@@ -276,21 +317,22 @@ export function ServiSuiteStatus({
       className={`fixed ${positionClasses} z-50 ${className ?? ""}`}
       role="alert"
     >
-      <div className={`${sev.bg} ${sev.border} border-b shadow-sm`}>
+      <div className={`${bannerStyle.bg} ${bannerStyle.border} border-b shadow-sm`}>
         {/* Primary banner row */}
         <div className="max-w-7xl mx-auto px-4 py-2.5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              {/* Severity badge */}
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium shrink-0 ${primarySev.badge}`}>
-                {primarySev.icon} {primarySev.label}
+              {/* Badge */}
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium shrink-0 ${primaryStyle.badge}`}>
+                {primaryStyle.icon} {primary.kind === "scheduled" ? "Upcoming" : primaryStyle.label}
               </span>
 
-              {/* Title + services */}
-              <span className={`text-sm font-medium truncate ${sev.text}`}>
+              {/* Title */}
+              <span className={`text-sm font-medium truncate ${bannerStyle.text}`}>
                 {primary.title}
               </span>
 
+              {/* Services */}
               {primary.services.length > 0 && (
                 <div className="hidden sm:flex items-center gap-1">
                   {primary.services.map((service) => (
@@ -306,35 +348,31 @@ export function ServiSuiteStatus({
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              {/* Time */}
-              <span className={`text-xs ${sev.text} opacity-70`}>
+              <span className={`text-xs ${bannerStyle.text} opacity-70`}>
                 {timeAgo(primary.latestUpdate.createdAt)}
               </span>
 
-              {/* Expand button if multiple incidents */}
               {visibleIncidents.length > 1 && (
                 <button
                   onClick={() => setExpanded(!expanded)}
-                  className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 ${sev.text}`}
+                  className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 ${bannerStyle.text}`}
                 >
                   {expanded ? "Hide" : `+${visibleIncidents.length - 1} more`}
                 </button>
               )}
 
-              {/* Status page link */}
               <a
                 href={STATUS_PAGE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 no-underline ${sev.text}`}
+                className={`text-xs font-medium px-2 py-1 rounded hover:bg-black/5 no-underline ${bannerStyle.text}`}
               >
                 Details
               </a>
 
-              {/* Dismiss */}
               <button
                 onClick={visibleIncidents.length === 1 ? () => handleDismiss(primary.id) : handleDismissAll}
-                className={`p-1 rounded hover:bg-black/5 ${sev.text}`}
+                className={`p-1 rounded hover:bg-black/5 ${bannerStyle.text}`}
                 aria-label="Dismiss"
               >
                 <svg className="size-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -345,29 +383,29 @@ export function ServiSuiteStatus({
           </div>
 
           {/* Latest update preview */}
-          <div className={`text-xs mt-1 ${sev.text} opacity-70`}>
+          <div className={`text-xs mt-1 ${bannerStyle.text} opacity-70`}>
             {preview.length > 200 ? `${preview.slice(0, 200)}...` : preview}
           </div>
         </div>
 
-        {/* Expanded: additional incidents */}
+        {/* Expanded rows */}
         {expanded && visibleIncidents.length > 1 && (
-          <div className={`border-t ${sev.border}`}>
+          <div className={`border-t ${bannerStyle.border}`}>
             {visibleIncidents.slice(1).map((incident) => {
-              const incSev = incident.severity ? SEVERITY_CONFIG[incident.severity] : sev;
+              const incStyle = getIncidentStyle(incident);
               const incPreview = stripMarkdown(incident.latestUpdate.body);
 
               return (
                 <div
                   key={incident.id}
-                  className={`max-w-7xl mx-auto px-4 py-2 border-b last:border-b-0 ${sev.border}`}
+                  className={`max-w-7xl mx-auto px-4 py-2 border-b last:border-b-0 ${bannerStyle.border}`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0 ${incSev.badge}`}>
-                        {incSev.icon} {incSev.badgeText}
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium shrink-0 ${incStyle.badge}`}>
+                        {incStyle.icon} {incident.kind === "scheduled" ? "Upcoming" : incStyle.label}
                       </span>
-                      <span className={`text-sm font-medium truncate ${sev.text}`}>
+                      <span className={`text-sm font-medium truncate ${bannerStyle.text}`}>
                         {incident.title}
                       </span>
                       {incident.services.length > 0 && (
@@ -384,12 +422,12 @@ export function ServiSuiteStatus({
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-xs ${sev.text} opacity-70`}>
+                      <span className={`text-xs ${bannerStyle.text} opacity-70`}>
                         {timeAgo(incident.latestUpdate.createdAt)}
                       </span>
                       <button
                         onClick={() => handleDismiss(incident.id)}
-                        className={`p-1 rounded hover:bg-black/5 ${sev.text}`}
+                        className={`p-1 rounded hover:bg-black/5 ${bannerStyle.text}`}
                         aria-label="Dismiss"
                       >
                         <svg className="size-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -398,7 +436,7 @@ export function ServiSuiteStatus({
                       </button>
                     </div>
                   </div>
-                  <div className={`text-xs mt-0.5 ${sev.text} opacity-70`}>
+                  <div className={`text-xs mt-0.5 ${bannerStyle.text} opacity-70`}>
                     {incPreview.length > 150 ? `${incPreview.slice(0, 150)}...` : incPreview}
                   </div>
                 </div>
